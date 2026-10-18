@@ -33,13 +33,7 @@ Audit-Log Agent accepts a wallet address and date range, groups relevant activit
 4. The agent calculates totals and selects notable transactions.
 5. A structured report is generated in the selected export format.
 
-## Requirements
 
-- Python 3.10+ (if implemented in Python; adjust to the project's actual runtime)
-- Access to the Pharos data source or MCP tools used by this implementation
-- Any API keys required by the chosen data provider
-
-> Update this section to match the dependencies and runtime used in this repository.
 
 ## Setup
 
@@ -49,36 +43,6 @@ Clone the repository:
 git clone <YOUR_REPOSITORY_URL>
 cd <REPOSITORY_DIRECTORY>
 ```
-
-Create and activate a virtual environment if the project uses Python:
-
-```bash
-python -m venv .venv
-# macOS/Linux
-source .venv/bin/activate
-# Windows PowerShell
-.venv\Scripts\Activate.ps1
-```
-
-Install dependencies using the project's dependency file:
-
-```bash
-pip install -r requirements.txt
-```
-
-Configure environment variables in a local `.env` file if required. Do not commit secrets.
-
-```env
-# Add the variables required by this implementation.
-```
-
-Run the application using the command defined by the project. For example:
-
-```bash
-python main.py
-```
-
-Replace the example commands with the actual commands used by this repository.
 
 ## Example Report
 
