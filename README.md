@@ -1,8 +1,8 @@
 # Built for Pharos Season of AI
 
-# Here is the Video Walkthrough to get started. (No Traditional Readme)
+Here is the Video Walkthrough to get started.
 
-# https://youtu.be/I1-n5D66MmU
+* https://youtu.be/I1-n5D66MmU
 
 # Audit-Log Agent
 
