@@ -1030,6 +1030,11 @@ async function fetchLiveWalletAuditData({
 }
 
 function generateComplianceNarrative({
+  address,
+  networkName,
+  symbol,
+  startDate,
+  endDate,
   accountSummary,
   categoryTotals,
   notableTxs
@@ -1290,6 +1295,11 @@ export default function App() {
 
         setAuditProgress('Synthesizing plain-language compliance narrative…');
         const narrative = generateComplianceNarrative({
+          address: addr,
+          networkName: netConfig.name,
+          symbol: netConfig.symbol,
+          startDate: startStr,
+          endDate: endStr,
           accountSummary,
           categoryTotals,
           notableTxs
