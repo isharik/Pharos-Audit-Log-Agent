@@ -7,32 +7,23 @@ import {
   Repeat,
   KeyRound,
   FileCode2,
-  Download,
   FileText,
   FileSpreadsheet,
   Printer,
   Search,
-  Calendar,
   ExternalLink,
   RefreshCw,
   CheckCircle2,
   AlertCircle,
-  Sparkles,
-  Activity,
   Terminal,
   Wallet,
   Copy,
   Check,
-  Filter,
   Layers,
-  Clock,
-  ChevronRight,
-  Compass,
   Scale,
   Bookmark,
   Radio,
   Server,
-  Eye
 } from 'lucide-react';
 
 const PHAROS_NETWORKS = {
@@ -442,6 +433,11 @@ function classifyActivityRecord(rawTx, targetAddress, symbol) {
   const input = (rawTx.input || rawTx.data || '0x').toLowerCase();
   const methodId = input.length >= 10 ? input.slice(0, 10) : '0x';
   const methodMeta = METHOD_SIGNATURES[methodId];
+  const decodedApprovalAmount = rawTx.approvalAmount ?? (
+    methodId === '0x095ea7b3' && /^[0-9a-f]{64}$/i.test(input.slice(74, 138))
+      ? BigInt(`0x${input.slice(74, 138)}`).toString()
+      : undefined
+  );
   const valueFloat = typeof rawTx.valueFloat === 'number'
     ? rawTx.valueFloat
     : formatUnits(rawTx.value || '0x0', rawTx.tokenDecimals || 18);
@@ -464,10 +460,12 @@ function classifyActivityRecord(rawTx, targetAddress, symbol) {
   ) {
     category = 'approvals';
     const spender = rawTx.spender || rawTx.to || 'Spender Contract';
-    const isRevoke = rawTx.value === '0' || rawTx.value === '0x0';
-    plainAction = isRevoke
+    const approvalAmount = decodedApprovalAmount;
+    plainAction = approvalAmount === '0'
       ? `Revoked token spending allowance for ${shortAddr(spender)}`
-      : `Granted ${assetSymbol} spending approval to ${shortAddr(spender)}`;
+      : approvalAmount === undefined
+      ? `Changed token spending approval for ${shortAddr(spender)} (allowance not decoded)`
+      : `Set token spending approval for ${shortAddr(spender)} (allowance not valued)`;
   }
   // 2. Explicit swap events or DEX router selectors
   else if (
@@ -518,6 +516,7 @@ function classifyActivityRecord(rawTx, targetAddress, symbol) {
     to: rawTx.to || 'Contract Creation',
     valueFloat,
     assetSymbol,
+    isNativeAsset: rawTx.assetSymbol === undefined,
     gasFeeFloat: rawTx.gasFeeFloat || 0,
     methodId,
     methodName,
@@ -795,6 +794,9 @@ async function fetchLiveWalletAuditData({
           valueFloat: logValueFloat,
           assetSymbol: topic0 === TOPIC_ERC20_TRANSFER || topic0 === TOPIC_ERC20_APPROVAL ? `TOKEN (${shortAddr(log.address)})` : symbol,
           input: parentTx?.input || '0x',
+          approvalAmount: topic0 === TOPIC_ERC20_APPROVAL && /^0x[0-9a-f]{64}$/i.test(log.data || '')
+            ? BigInt(log.data).toString()
+            : undefined,
           eventType,
           methodName,
           source: 'Pharos RPC Logs'
@@ -877,12 +879,7 @@ async function fetchLiveWalletAuditData({
   };
 }
 
-async function generateComplianceNarrativeWithAI({
-  address,
-  networkName,
-  symbol,
-  startDate,
-  endDate,
+function generateComplianceNarrative({
   accountSummary,
   categoryTotals,
   notableTxs
@@ -898,50 +895,7 @@ async function generateComplianceNarrativeWithAI({
     notableTxs
   });
 
-  const apiKey = '';
-  const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3-flash-preview:generateContent?key=${apiKey}`;
-
-  const systemPrompt =
-    'You are a Senior Blockchain Compliance Officer and Certified Crypto Auditor writing inside an official Pharos Network Audit Ledger Book. Write a clear, plain-language executive audit report suitable for an accountant or compliance officer. Do not use markdown headers (#), just write 3 concise, high-signal paragraphs covering: (1) Executive Posture & Balance Standing, (2) Flow of Funds & Category Breakdown (Transfers In/Out, Swaps, Approvals, Contract Interactions), and (3) Notable Transactions & Compliance Risk Observations.';
-
-  const userPrompt = `Generate a plain-language compliance audit summary for wallet ${address} on ${networkName} (Chain native token: ${symbol}) for the audit period ${startDate} to ${endDate}.
-Live On-Chain State:
-- Current Native Balance: ${formatNumber(accountSummary.balance)} ${symbol}
-- Historical Outbound Nonce Count: ${accountSummary.txCount}
-- Address Type: ${accountSummary.isContract ? 'Smart Contract Account' : 'Externally Owned Account (EOA)'}
-
-Categorized Activity in Period:
-- Transfers In: ${categoryTotals.transfers_in.count} txs, Total Volume: ${formatNumber(categoryTotals.transfers_in.volume)} ${symbol}
-- Transfers Out: ${categoryTotals.transfers_out.count} txs, Total Volume: ${formatNumber(categoryTotals.transfers_out.volume)} ${symbol}
-- Swaps: ${categoryTotals.swaps.count} txs, Total Volume: ${formatNumber(categoryTotals.swaps.volume)} ${symbol}
-- Approvals: ${categoryTotals.approvals.count} events
-- Contract Interactions: ${categoryTotals.contract_interactions.count} calls, Total Volume: ${formatNumber(categoryTotals.contract_interactions.volume)} ${symbol}
-
-Notable Transactions:
-${notableTxs
-  .slice(0, 5)
-  .map(
-    (t, i) =>
-      `${i + 1}. [${t.category}] ${t.plainAction} (Hash: ${t.hash}, Block: ${t.blockNumber})`
-  )
-  .join('\n')}`;
-
-  try {
-    const res = await fetch(apiUrl, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        contents: [{ parts: [{ text: userPrompt }] }],
-        systemInstruction: { parts: [{ text: systemPrompt }] }
-      })
-    });
-    if (!res.ok) return deterministicSummary;
-    const data = await res.json();
-    const aiText = data?.candidates?.[0]?.content?.parts?.[0]?.text;
-    return aiText && aiText.trim().length > 40 ? aiText.trim() : deterministicSummary;
-  } catch {
-    return deterministicSummary;
-  }
+  return deterministicSummary;
 }
 
 function buildDeterministicComplianceSummary({
@@ -958,14 +912,14 @@ function buildDeterministicComplianceSummary({
   const netFlow = categoryTotals.transfers_in.volume - categoryTotals.transfers_out.volume;
 
   const p1 = `During the audit window from ${startDate} through ${endDate} on ${networkName}, account ${address} (${
-    accountSummary.isContract ? 'Verified Smart Contract' : 'Externally Owned Wallet'
-  }) maintained a live closing balance of ${formatNumber(
+    accountSummary.isContract ? 'Contract account (bytecode detected)' : 'Address with no bytecode detected'
+  }) had a current balance snapshot of ${formatNumber(
     accountSummary.balance
-  )} ${symbol} and a cumulative lifetime nonce of ${
+  )} ${symbol}; its current transaction nonce is ${
     accountSummary.txCount
-  } signed outbound transactions. Within the selected date range, the Pharos Audit-Log Agent indexed ${totalTxCount} verifiable on-chain events across transfers, decentralized exchange swaps, token allowances, and direct contract executions.`;
+  }. The available explorer and recent RPC queries returned ${totalTxCount} activity records for the selected date range. Coverage depends on the indexer and recent-block limits described in the report.`;
 
-  const p2 = `From an accounting and cash-flow perspective, inbound settlements (Transfers In) totaled ${formatNumber(
+  const p2 = `In the returned activity, inbound transfers totaled ${formatNumber(
     categoryTotals.transfers_in.volume
   )} ${symbol} across ${
     categoryTotals.transfers_in.count
@@ -985,32 +939,32 @@ function buildDeterministicComplianceSummary({
 
   const p3 =
     notableTxs.length > 0
-      ? `Compliance & Risk Review: ${
+      ? `Review note: ${
           categoryTotals.approvals.count > 0
-            ? `The account modified ${categoryTotals.approvals.count} token spending approval(s) during this period; compliance officers should verify that active spender allowances remain restricted to audited protocol routers. `
-            : 'Zero new ERC-20 spending approvals were granted during the period, minimizing allowance-drain exposure. '
-        }The highest-materiality entry occurred in block #${
+            ? `The indexer returned ${categoryTotals.approvals.count} approval event(s); current allowance state was not queried. `
+            : 'No approval events were returned by the available queries. '
+        }The largest value-based entry in the returned sample occurred in block #${
           notableTxs[0].blockNumber
         } (${notableTxs[0].plainAction}, tx ${shortAddr(
           notableTxs[0].hash
-        )}). All transaction hashes in this ledger link directly to PharosScan for immutable cryptographic verification.`
-      : `Compliance & Risk Review: While the wallet holds an on-chain state of ${formatNumber(
+        )}). Transaction links open PharosScan for independent inspection.`
+      : `Review note: The address has a current balance snapshot of ${formatNumber(
           accountSummary.balance
         )} ${symbol} and ${
           accountSummary.txCount
-        } lifetime nonce operations, zero indexed transactions fell inside the ${startDate} – ${endDate} window (or outside the recent RPC log retention window). Try selecting one of the Live Active Wallets discovered in the latest Pharos block or expanding the date window.`;
+        } current transaction nonce, no transactions were returned for ${startDate} – ${endDate}. Explorer pagination, recent-block RPC coverage, or endpoint availability may limit this result; it does not establish that the address had no activity.`;
 
   return `${p1}\n\n${p2}\n\n${p3}`;
 }
 
 export default function App() {
   // Default date range: past 30 days through today
-  const todayStr = useMemo(() => new Date().toISOString().slice(0, 10), []);
-  const thirtyDaysAgoStr = useMemo(() => {
+  const [todayStr] = useState(() => new Date().toISOString().slice(0, 10));
+  const [thirtyDaysAgoStr] = useState(() => {
     const d = new Date();
     d.setDate(d.getDate() - 30);
     return d.toISOString().slice(0, 10);
-  }, []);
+  });
 
   const [selectedNetKey, setSelectedNetKey] = useState('mainnet');
   const network = PHAROS_NETWORKS[selectedNetKey];
@@ -1018,6 +972,8 @@ export default function App() {
   const [walletInput, setWalletInput] = useState('');
   const [startDate, setStartDate] = useState(thirtyDaysAgoStr);
   const [endDate, setEndDate] = useState(todayStr);
+  const auditInputsRef = useRef({ walletInput, startDate, endDate });
+  const runLiveAuditRef = useRef(null);
 
   // Live chain telemetry
   const [chainTelemetry, setChainTelemetry] = useState({
@@ -1072,12 +1028,13 @@ export default function App() {
         const discovery = await client.discoverLiveActiveAddresses(status.blockNumber, 6);
         setLiveActiveAddresses(discovery.addresses);
 
-        if (autoAuditFirstAddress && discovery.addresses.length > 0 && !walletInput) {
+        const { walletInput: currentWallet, startDate: currentStart, endDate: currentEnd } = auditInputsRef.current;
+        if (autoAuditFirstAddress && discovery.addresses.length > 0 && !currentWallet) {
           const firstAddr = discovery.addresses[0].address;
           setWalletInput(firstAddr);
-          runLiveAudit(firstAddr, startDate, endDate, status.blockNumber, network);
+          runLiveAuditRef.current?.(firstAddr, currentStart, currentEnd, status.blockNumber, network);
         }
-      } catch (err) {
+        } catch {
         setChainTelemetry({
           blockNumber: null,
           gasPriceGwei: null,
@@ -1159,7 +1116,10 @@ export default function App() {
           const cat = grouped[r.category] ? r.category : 'contract_interactions';
           grouped[cat].push(r);
           categoryTotals[cat].count += 1;
-          categoryTotals[cat].volume += r.valueFloat || 0;
+          // ERC-20 amounts use token-specific units. Only aggregate native-token values here.
+          if (r.isNativeAsset) {
+            categoryTotals[cat].volume += r.valueFloat || 0;
+          }
           categoryTotals[cat].gasFees += r.gasFeeFloat || 0;
         }
 
@@ -1179,12 +1139,7 @@ export default function App() {
           .slice(0, 6);
 
         setAuditProgress('Synthesizing plain-language compliance narrative…');
-        const narrative = await generateComplianceNarrativeWithAI({
-          address: addr,
-          networkName: netConfig.name,
-          symbol: netConfig.symbol,
-          startDate: startStr,
-          endDate: endStr,
+        const narrative = generateComplianceNarrative({
           accountSummary,
           categoryTotals,
           notableTxs
@@ -1206,7 +1161,7 @@ export default function App() {
           narrative,
           sources
         });
-      } catch (err) {
+        } catch {
         setAuditError(err.message || 'Live audit query failed.');
       } finally {
         setIsAuditing(false);
@@ -1217,8 +1172,13 @@ export default function App() {
   );
 
   useEffect(() => {
+    auditInputsRef.current = { walletInput, startDate, endDate };
+    runLiveAuditRef.current = runLiveAudit;
+  }, [walletInput, startDate, endDate, runLiveAudit]);
+
+  useEffect(() => {
     syncLiveNetworkState(true);
-  }, [selectedNetKey]);
+  }, [syncLiveNetworkState]);
 
   // Connect injected EVM wallet (MetaMask / OKX / Bitget)
   const handleConnectWallet = async () => {
@@ -1231,7 +1191,7 @@ export default function App() {
           setWalletInput(accounts[0]);
           runLiveAudit(accounts[0], startDate, endDate, chainTelemetry.blockNumber, network);
         }
-      } catch (err) {
+      } catch {
         setAuditError('Wallet connection request was declined.');
       }
     } else {
@@ -1265,7 +1225,7 @@ export default function App() {
   };
 
   const showExportNotification = (format) => {
-    setExportToast(`Exported official Audit Ledger as ${format}`);
+    setExportToast(`Exported wallet activity ledger as ${format}`);
     setTimeout(() => setExportToast(null), 3200);
   };
 
@@ -1286,7 +1246,7 @@ export default function App() {
     } = auditReport;
 
     const md = [
-      `# PHAROS NETWORK — OFFICIAL WALLET AUDIT LEDGER`,
+      `# PHAROS NETWORK — WALLET ACTIVITY LEDGER`,
       `**Audit Reference:** \`${auditId}\`  `,
       `**Wallet Audited:** \`${address}\`  `,
       `**Network:** ${net.name} (Chain ID: ${net.chainId})  `,
@@ -1303,10 +1263,10 @@ export default function App() {
       ``,
       `## II. ON-CHAIN ACCOUNT STANDING & CATEGORY TOTALS`,
       `- **Closing Balance:** ${formatNumber(accountSummary.balance)} ${net.symbol}`,
-      `- **Lifetime Outbound Nonce:** ${accountSummary.txCount}`,
-      `- **Account Classification:** ${accountSummary.isContract ? 'Smart Contract' : 'Externally Owned Account (EOA)'}`,
+      `- **Current Transaction Nonce:** ${accountSummary.txCount}`,
+      `- **Bytecode Check:** ${accountSummary.isContract ? 'Bytecode detected at the current block' : 'No bytecode detected at the current block'}`,
       ``,
-      `| Category Code | Activity Category | Tx Count | Total Volume (${net.symbol}) | Gas Fees (${net.symbol}) |`,
+      `| Category Code | Activity Category | Tx Count | Native-Token Volume (${net.symbol}) | Gas Fees (${net.symbol}) |`,
       `| :--- | :--- | ---: | ---: | ---: |`,
       ...Object.keys(CATEGORY_META).map((k) => {
         const meta = CATEGORY_META[k];
@@ -1369,7 +1329,10 @@ export default function App() {
     ];
 
     const escapeCsv = (val) => {
-      const str = String(val ?? '');
+      const value = String(val ?? '');
+      const str = typeof val === 'string' && /^[=+@\-\t\r]/.test(value)
+        ? `'${value}`
+        : value;
       if (str.includes(',') || str.includes('"') || str.includes('\n')) {
         return `"${str.replace(/"/g, '""')}"`;
       }
@@ -1487,7 +1450,7 @@ export default function App() {
                   Pharos Audit-Log Agent
                 </h1>
                 <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-mono-ledger font-semibold uppercase tracking-wider bg-[#001CE6]/10 text-[#001CE6] border border-[#001CE6]/20">
-                  ai.pharos.xyz
+                  LIVE AUDIT
                 </span>
               </div>
               <p className="text-[11px] sm:text-xs text-zinc-600 mt-0.5">
@@ -1892,7 +1855,7 @@ export default function App() {
                         </div>
                         <div className="bg-[#FAF8F3] rounded-xl p-2.5 border border-zinc-900/5">
                           <span className="text-[10px] text-zinc-500 uppercase block mb-0.5">
-                            Lifetime Nonce
+                            Current Nonce
                           </span>
                           <span className="text-sm font-semibold text-zinc-900">
                             {auditReport.accountSummary.txCount.toLocaleString()} txs
@@ -1914,7 +1877,7 @@ export default function App() {
                       <div className="flex items-center justify-between">
                         <h3 className="text-xs font-mono-ledger uppercase tracking-wider font-semibold text-zinc-700 flex items-center gap-1.5">
                           <Scale className="w-3.5 h-3.5 text-[#001CE6]" />
-                          Plain-Language Auditor’s Opinion
+                          Plain-Language Activity Summary
                         </h3>
                         <span className="text-[10px] font-mono-ledger text-zinc-500">
                           Compliance & Accounting Narrative
@@ -1933,7 +1896,7 @@ export default function App() {
                           Schedule A · Totals Per Activity Category
                         </h3>
                         <span className="text-[10px] font-mono-ledger text-zinc-500">
-                          REQ 02 & 03 VERIFIED
+                          INDEXED ACTIVITY SAMPLE
                         </span>
                       </div>
 
@@ -1944,7 +1907,7 @@ export default function App() {
                               <th className="py-2.5 px-3.5">Category</th>
                               <th className="py-2.5 px-2.5 text-right">Count</th>
                               <th className="py-2.5 px-3.5 text-right">
-                                Total Volume ({auditReport.network.symbol})
+                                Native Volume ({auditReport.network.symbol})
                               </th>
                               <th className="py-2.5 px-3.5 text-right">Gas Fees</th>
                             </tr>
@@ -2027,6 +1990,9 @@ export default function App() {
                           </tfoot>
                         </table>
                       </div>
+                      <p className="text-[10px] leading-relaxed text-zinc-500">
+                        Volume totals include native-token amounts only. ERC-20 amounts use token-specific decimals and are shown per record without being combined here.
+                      </p>
                     </div>
 
                     {/* Requirement 03: Notable Transactions With Direct Explorer Links */}
@@ -2377,7 +2343,7 @@ export default function App() {
                       </span>
                     </div>
                     <span className="text-[10px] font-mono-ledger text-emerald-400">
-                      ● 100% Live On-Chain Data
+                      Live endpoints · coverage varies by source
                     </span>
                   </div>
 
