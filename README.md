@@ -4,3 +4,128 @@
 
 # https://youtu.be/I1-n5D66MmU
 
+# Audit-Log Agent
+
+Turn a wallet's on-chain history into a clear, human-readable activity report for a selected period.
+
+## Overview
+
+Audit-Log Agent accepts a wallet address and date range, groups relevant activity into useful categories, calculates category totals, and highlights notable transactions. The goal is to make wallet activity easier to review for accounting, compliance checks, and general record-keeping.
+
+## Features
+
+- Accepts a wallet address and reporting period.
+- Categorizes activity into:
+  - Incoming transfers
+  - Outgoing transfers
+  - Swaps
+  - Token approvals
+  - Contract interactions
+- Summarizes totals for each category.
+- Highlights notable transactions with explorer links.
+- Exports reports as Markdown, PDF, or CSV.
+
+## How It Works
+
+1. Provide a wallet address and date range.
+2. The agent retrieves and processes relevant on-chain activity.
+3. Transactions are classified into supported categories.
+4. The agent calculates totals and selects notable transactions.
+5. A structured report is generated in the selected export format.
+
+## Requirements
+
+- Python 3.10+ (if implemented in Python; adjust to the project's actual runtime)
+- Access to the Pharos data source or MCP tools used by this implementation
+- Any API keys required by the chosen data provider
+
+> Update this section to match the dependencies and runtime used in this repository.
+
+## Setup
+
+Clone the repository:
+
+```bash
+git clone <YOUR_REPOSITORY_URL>
+cd <REPOSITORY_DIRECTORY>
+```
+
+Create and activate a virtual environment if the project uses Python:
+
+```bash
+python -m venv .venv
+# macOS/Linux
+source .venv/bin/activate
+# Windows PowerShell
+.venv\Scripts\Activate.ps1
+```
+
+Install dependencies using the project's dependency file:
+
+```bash
+pip install -r requirements.txt
+```
+
+Configure environment variables in a local `.env` file if required. Do not commit secrets.
+
+```env
+# Add the variables required by this implementation.
+```
+
+Run the application using the command defined by the project. For example:
+
+```bash
+python main.py
+```
+
+Replace the example commands with the actual commands used by this repository.
+
+## Example Report
+
+```markdown
+# Wallet Activity Report
+
+- Wallet: 0x...
+- Period: YYYY-MM-DD to YYYY-MM-DD
+- Data block: <block number, if available>
+
+## Category Summary
+
+| Category | Transaction Count | Total |
+|---|---:|---:|
+| Incoming transfers | — | — |
+| Outgoing transfers | — | — |
+| Swaps | — | — |
+| Approvals | — | — |
+| Contract interactions | — | — |
+
+## Notable Transactions
+
+- [Transaction description](<EXPLORER_TRANSACTION_URL>)
+```
+
+The values above are placeholders, not live chain data.
+
+## Security and Data Notes
+
+- Never put private keys, API secrets, or access tokens in source code.
+- Link to transaction evidence where possible.
+- Clearly label missing, incomplete, or unclassified activity.
+- Avoid presenting the report as a formal compliance determination.
+
+## Limitations
+
+Coverage depends on the chain data and tools available to the implementation. Internal contract events, token transfers, and swaps may require different data sources. State any known coverage gaps here.
+
+## Roadmap
+
+- [ ] Improve transaction classification
+- [ ] Add configurable report periods
+- [ ] Validate export formatting
+- [ ] Add tests for totals and categorization
+
+## License
+
+Add the license used by this repository.
+
+
