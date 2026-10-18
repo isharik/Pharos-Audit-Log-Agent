@@ -33,14 +33,15 @@ const PHAROS_NETWORKS = {
     chainId: 1672,
     chainIdHex: '0x688',
     symbol: 'PROS',
-    mcpUrl: 'https://mcp.pharos.xyz/mcp',
+    mcpUrl: import.meta.env.VITE_PHAROS_MCP_URL || (import.meta.env.DEV ? '/__pharos_mcp' : 'https://mcp.pharos.xyz/mcp'),
     rpcUrls: [
       'https://rpc.pharos.xyz',
       'https://infra.originstake.com/pharos/evm',
       'https://pharos.drpc.org'
     ],
     explorerUrl: 'https://pharosscan.xyz',
-    explorerApi: 'https://pharosscan.xyz/api'
+    explorerApi: 'https://pharosscan.xyz/api',
+    historyApi: 'https://api.socialscan.io/pharos-mainnet/v1/explorer'
   },
   atlantic: {
     id: 'atlantic',
@@ -48,12 +49,13 @@ const PHAROS_NETWORKS = {
     chainId: 688689,
     chainIdHex: '0xa8231',
     symbol: 'PHRS',
-    mcpUrl: 'https://mcp.pharos.xyz/mcp',
+    mcpUrl: import.meta.env.VITE_PHAROS_MCP_URL || (import.meta.env.DEV ? '/__pharos_mcp' : 'https://mcp.pharos.xyz/mcp'),
     rpcUrls: [
       'https://atlantic.dplabs-internal.com'
     ],
     explorerUrl: 'https://atlantic.pharosscan.xyz',
-    explorerApi: 'https://atlantic.pharosscan.xyz/api'
+    explorerApi: 'https://atlantic.pharosscan.xyz/api',
+    historyApi: 'https://api.socialscan.io/pharos-atlantic-testnet/v1/explorer'
   },
   testnet: {
     id: 'testnet',
@@ -61,7 +63,7 @@ const PHAROS_NETWORKS = {
     chainId: 688688,
     chainIdHex: '0xa8230',
     symbol: 'PHRS',
-    mcpUrl: 'https://mcp.pharos.xyz/mcp',
+    mcpUrl: import.meta.env.VITE_PHAROS_MCP_URL || (import.meta.env.DEV ? '/__pharos_mcp' : 'https://mcp.pharos.xyz/mcp'),
     rpcUrls: [
       'https://testnet.dplabs-internal.com'
     ],
@@ -233,65 +235,97 @@ class PharosLiveClient {
     this.rpcId = 1;
   }
 
-  // Call Pharos Chain MCP (https://mcp.pharos.xyz/mcp) using JSON-RPC 2.0 tools/call
+  async readMcpResponse(response) {
+    const body = await response.text();
+    if (!body) return null;
+    if ((response.headers.get('content-type') || '').includes('text/event-stream')) {
+      const dataLine = body.split(/\r?\n/).find((line) => line.startsWith('data:'));
+      if (!dataLine) throw new Error('Empty MCP event-stream response');
+      return JSON.parse(dataLine.replace(/^data:\s*/, ''));
+    }
+    return JSON.parse(body);
+  }
+
   async callMcpTool(toolName, args = {}) {
     if (this.network.id !== 'mainnet') {
-      throw new Error('MCP hosted endpoint targets Pharos Mainnet (Chain 1672)');
+      throw new Error('The hosted Pharos MCP endpoint only serves Mainnet.');
     }
-    const payload = {
-      jsonrpc: '2.0',
-      id: this.rpcId++,
-      method: 'tools/call',
-      params: {
-        name: toolName,
-        arguments: args
-      }
+
+    const headers = {
+      'Content-Type': 'application/json',
+      Accept: 'application/json, text/event-stream',
+      'MCP-Protocol-Version': '2025-03-26'
     };
 
-    const res = await fetch(this.network.mcpUrl, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Accept: 'application/json, text/event-stream'
-      },
-      body: JSON.stringify(payload)
-    });
-
-    if (!res.ok) {
-      throw new Error(`MCP HTTP ${res.status}`);
-    }
-
-    const contentType = res.headers.get('content-type') || '';
-    let data;
-    if (contentType.includes('text/event-stream')) {
-      const text = await res.text();
-      const dataLine = text
-        .split('\n')
-        .find((line) => line.startsWith('data: '));
-      if (!dataLine) throw new Error('Empty MCP SSE response');
-      data = JSON.parse(dataLine.replace(/^data:\s*/, ''));
-    } else {
-      data = await res.json();
-    }
-
-    if (data.error) {
-      throw new Error(data.error.message || 'MCP error');
-    }
-
-    const textContent = data.result?.content?.[0]?.text;
-    if (textContent) {
-      this.log({
-        source: 'PharosMCP',
-        method: `mcp:${toolName}`,
-        status: 'ok'
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const initializeResponse = await fetch(this.network.mcpUrl, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          jsonrpc: '2.0',
+          id: this.rpcId++,
+          method: 'initialize',
+          params: {
+            protocolVersion: '2025-03-26',
+            capabilities: {},
+            clientInfo: { name: 'pharos-audit-ledger', version: '1.0.0' }
+          }
+        })
       });
+      if (!initializeResponse.ok) {
+        throw new Error(`MCP initialize returned HTTP ${initializeResponse.status}`);
+      }
+      const initializeData = await this.readMcpResponse(initializeResponse);
+      if (initializeData?.error) {
+        throw new Error(initializeData.error.message || 'MCP initialization failed');
+      }
+
+      const sessionId = initializeResponse.headers.get('mcp-session-id');
+      const requestHeaders = sessionId ? { ...headers, 'Mcp-Session-Id': sessionId } : headers;
+      const initializedResponse = await fetch(this.network.mcpUrl, {
+        method: 'POST',
+        headers: requestHeaders,
+        body: JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' })
+      });
+      if (!initializedResponse.ok) {
+        const message = await initializedResponse.text();
+        if (attempt === 0 && /unknown mcp session/i.test(message)) continue;
+        throw new Error(`MCP session setup returned HTTP ${initializedResponse.status}`);
+      }
+
+      const callResponse = await fetch(this.network.mcpUrl, {
+        method: 'POST',
+        headers: requestHeaders,
+        body: JSON.stringify({
+          jsonrpc: '2.0',
+          id: this.rpcId++,
+          method: 'tools/call',
+          params: { name: toolName, arguments: args }
+        })
+      });
+      if (!callResponse.ok) {
+        const message = await callResponse.text();
+        if (attempt === 0 && /unknown mcp session/i.test(message)) continue;
+        throw new Error(`MCP tool call returned HTTP ${callResponse.status}`);
+      }
+
+      const data = await this.readMcpResponse(callResponse);
+      if (data?.error) throw new Error(data.error.message || 'MCP tool call failed');
+      const toolResult = data?.result;
+      if (toolResult?.isError) {
+        throw new Error(toolResult.content?.[0]?.text || 'Pharos MCP reported a tool error');
+      }
+      const textContent = toolResult?.content?.find((item) => item.type === 'text')?.text;
+      this.log({ source: 'PharosMCP', method: `mcp:${toolName}`, status: 'ok' });
+      if (!textContent) return toolResult;
       try {
         return JSON.parse(textContent);
       } catch {
         return textContent;
       }
     }
-    return data.result;
+
+    throw new Error('Pharos MCP session could not be established after retry.');
   }
 
   // Direct JSON-RPC call across configured Pharos RPC endpoints
@@ -299,16 +333,24 @@ class PharosLiveClient {
     let lastErr = null;
     for (const url of this.network.rpcUrls) {
       try {
-        const res = await fetch(url, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            jsonrpc: '2.0',
-            id: this.rpcId++,
-            method,
-            params
-          })
-        });
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 10000);
+        let res;
+        try {
+          res = await fetch(url, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              jsonrpc: '2.0',
+              id: this.rpcId++,
+              method,
+              params
+            }),
+            signal: controller.signal
+          });
+        } finally {
+          clearTimeout(timeoutId);
+        }
         if (!res.ok) continue;
         const json = await res.json();
         if (json.error) {
@@ -343,8 +385,12 @@ class PharosLiveClient {
             via: 'Pharos Chain MCP'
           };
         }
-      } catch {
-        // Fallback smoothly to Pharos JSON-RPC
+      } catch (err) {
+        this.log({
+          source: 'PharosMCP',
+          method: 'get_chain_info',
+          status: `unavailable; RPC fallback (${err.message || 'connection failed'})`
+        });
       }
     }
 
@@ -542,9 +588,106 @@ async function fetchLiveWalletAuditData({
   const symbol = client.network.symbol;
   const collectedMap = new Map();
   const dataSourcesUsed = new Set();
+  const dataWarnings = [];
+
+  if (client.network.historyApi) {
+    const pageSize = 500;
+    const maxPages = 20;
+    const pagesPerBatch = 3;
+    let reachedStartDate = false;
+    let reachedEndOfHistory = false;
+
+    try {
+      for (let firstPage = 1; firstPage <= maxPages; firstPage += pagesPerBatch) {
+        const pageNumbers = Array.from(
+          { length: Math.min(pagesPerBatch, maxPages - firstPage + 1) },
+          (_, index) => firstPage + index
+        );
+        onProgress(`Loading PharosScan wallet history (pages ${pageNumbers[0]}–${pageNumbers.at(-1)})…`);
+
+        const pageResults = await Promise.all(
+          pageNumbers.map(async (page) => {
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 20000);
+            try {
+              const url = `${client.network.historyApi}/address/${cleanAddr}/transactions?size=${pageSize}&page=${page}`;
+              const res = await fetch(url, {
+                headers: { Accept: 'application/json' },
+                signal: controller.signal
+              });
+              if (!res.ok) throw new Error(`Explorer HTTP ${res.status}`);
+              return await res.json();
+            } finally {
+              clearTimeout(timeoutId);
+            }
+          })
+        );
+
+        dataSourcesUsed.add('PharosScan SocialScan API');
+        let oldestTimestamp = Infinity;
+
+        for (const result of pageResults) {
+          const items = Array.isArray(result.data) ? result.data : [];
+          if (items.length < pageSize) reachedEndOfHistory = true;
+
+          for (const item of items) {
+            const timestamp = new Date(item.block_timestamp || item.timestamp || '').getTime();
+            if (!Number.isFinite(timestamp)) continue;
+            oldestTimestamp = Math.min(oldestTimestamp, timestamp);
+            if (timestamp < startMs || timestamp > endMs) continue;
+
+            const rec = classifyActivityRecord(
+              {
+                id: item.hash,
+                hash: item.hash,
+                blockNumber: item.block_number,
+                timestamp,
+                from: item.from_address,
+                to: item.to_address || item.receipt_contract_address,
+                value: item.value || '0',
+                input: item.method_id || '0x',
+                methodName: item.method || undefined,
+                gasFeeFloat: Number(item.transaction_fee || item.total_transaction_fee || 0),
+                status: Number(item.receipt_status) === 0 ? 'Failed' : 'Confirmed',
+                source: 'PharosScan SocialScan API'
+              },
+              cleanAddr,
+              symbol
+            );
+            collectedMap.set(rec.id, rec);
+          }
+        }
+
+        if (oldestTimestamp <= startMs) {
+          reachedStartDate = true;
+          break;
+        }
+        if (reachedEndOfHistory) break;
+      }
+
+      if (!reachedStartDate && !reachedEndOfHistory) {
+        dataWarnings.push(
+          `Explorer history was capped at ${(pageSize * maxPages).toLocaleString()} most-recent transactions; this date range may be incomplete.`
+        );
+      }
+      client.log({
+        source: 'PharosScan',
+        method: 'SocialScan address transactions',
+        status: `${collectedMap.size} records`
+      });
+    } catch (err) {
+      dataWarnings.push(`Explorer history could not be loaded: ${err.message || 'request failed'}.`);
+      client.log({
+        source: 'PharosScan',
+        method: 'SocialScan address transactions',
+        status: 'unavailable; trying RPC'
+      });
+    }
+  }
 
   // Step 1: Query Blockscout V2 API & Etherscan-compatible API on PharosScan if reachable
   onProgress('Querying PharosScan Explorer indexer for historical transactions...');
+  if (!client.network.historyApi) {
   try {
     const v2Url = `${client.network.explorerUrl}/api/v2/addresses/${cleanAddr}/transactions`;
     const res = await fetch(v2Url, { headers: { Accept: 'application/json' } });
@@ -664,6 +807,7 @@ async function fetchLiveWalletAuditData({
     } catch {
       // Proceed to direct on-chain RPC / MCP eth_getLogs & block inspection
     }
+  }
   }
 
   // Step 2: Query Live On-Chain Logs via Pharos RPC / MCP (1000-block window per Pharos MCP spec)
@@ -813,6 +957,10 @@ async function fetchLiveWalletAuditData({
     // Continue to recent block scan
   }
 
+  // SocialScan has already indexed address history, so avoid a duplicate and
+  // incomplete last-10-block scan when that source succeeded.
+  const shouldScanRecentBlocks = !dataSourcesUsed.has('PharosScan SocialScan API');
+  if (shouldScanRecentBlocks) {
   // Step 3: Scan recent blocks for direct native transactions involving the address
   onProgress('Scanning recent Pharos blocks for direct wallet transactions...');
   try {
@@ -868,6 +1016,7 @@ async function fetchLiveWalletAuditData({
   } catch {
     // ignore block scan error
   }
+  }
 
   const records = Array.from(collectedMap.values()).sort(
     (a, b) => b.timestamp - a.timestamp || b.blockNumber - a.blockNumber
@@ -875,7 +1024,8 @@ async function fetchLiveWalletAuditData({
 
   return {
     records,
-    sources: Array.from(dataSourcesUsed)
+    sources: Array.from(dataSourcesUsed),
+    warnings: dataWarnings
   };
 }
 
@@ -1034,7 +1184,7 @@ export default function App() {
           setWalletInput(firstAddr);
           runLiveAuditRef.current?.(firstAddr, currentStart, currentEnd, status.blockNumber, network);
         }
-        } catch {
+      } catch (err) {
         setChainTelemetry({
           blockNumber: null,
           gasPriceGwei: null,
@@ -1085,7 +1235,7 @@ export default function App() {
         setAuditProgress('Reading live account balance, nonce & bytecode state…');
         const accountSummary = await client.getAccountSummary(addr);
 
-        const { records, sources } = await fetchLiveWalletAuditData({
+        const { records, sources, warnings } = await fetchLiveWalletAuditData({
           client,
           address: addr,
           startDateStr: startStr,
@@ -1159,9 +1309,10 @@ export default function App() {
           categoryTotals,
           notableTxs,
           narrative,
-          sources
+          sources,
+          warnings
         });
-        } catch {
+      } catch (err) {
         setAuditError(err.message || 'Live audit query failed.');
       } finally {
         setIsAuditing(false);
@@ -1752,6 +1903,16 @@ export default function App() {
               <div className="mt-3.5 flex items-center gap-2.5 px-3.5 py-2.5 rounded-xl bg-rose-50 border border-rose-200 text-rose-800 text-xs">
                 <AlertCircle className="w-4 h-4 shrink-0 text-rose-600" />
                 <span>{auditError}</span>
+              </div>
+            )}
+            {auditReport?.warnings?.length > 0 && (
+              <div className="mt-3.5 space-y-1 px-3.5 py-2.5 rounded-xl bg-amber-50 border border-amber-200 text-amber-900 text-xs">
+                {auditReport.warnings.map((warning) => (
+                  <p key={warning} className="flex items-start gap-2">
+                    <AlertCircle className="w-4 h-4 shrink-0 text-amber-700" />
+                    <span>{warning}</span>
+                  </p>
+                ))}
               </div>
             )}
             {isAuditing && auditProgress && (

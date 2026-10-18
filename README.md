@@ -28,7 +28,7 @@ Use `npm run build` to create a production bundle, `npm run preview` to serve it
 ## Data and coverage
 
 - Reads are made directly by the browser to the selected Pharos RPC endpoints and PharosScan APIs. Network access and endpoint CORS support are required; no server or credentials are configured by this project.
-- Explorer transaction queries use the first response page and do not follow pagination. RPC log queries cover at most the most recent 1,000 blocks, while direct block inspection covers 10 blocks. These limits can omit historical activity.
+- Mainnet and Atlantic transaction history comes from the SocialScan explorer API and follows pages of up to 500 records, capped at 10,000 records per audit. RPC log queries cover at most the most recent 1,000 blocks; direct block inspection is a fallback limited to 10 blocks when the explorer is unavailable. A coverage warning is shown when the explorer fails or reaches its cap.
 - RPC log timestamps are estimated from block distance using an assumed 1.5 seconds per block. Explorer timestamps and direct block timestamps are used when available.
 - The displayed balance and nonce are current snapshots, not values at the end of the chosen audit period. A zero-result query does not prove that an address had no activity.
 - ERC-20 amounts have token-specific decimals. Category volume totals therefore include native-token amounts only. Approval records distinguish decoded zero allowances from unknown or nonzero allowances; the app does not query current allowance state.
@@ -37,7 +37,7 @@ Use `npm run build` to create a production bundle, `npm run preview` to serve it
 
 ## Networks
 
-Network names, chain IDs, RPC endpoints, and explorer endpoints are configured in `src/App.jsx`. Mainnet MCP requests are attempted for chain status, with JSON-RPC fallback. Test networks use their configured JSON-RPC endpoints.
+Network names, chain IDs, RPC endpoints, and explorer endpoints are configured in `src/App.jsx`. Mainnet MCP requests use the Streamable HTTP initialize/session/tool-call flow for chain status, with JSON-RPC fallback. The local Vite server proxies `/__pharos_mcp` to the hosted MCP service because that service does not currently allow browser CORS requests. Production deployments need an equivalent same-origin reverse proxy and should set `VITE_PHAROS_MCP_URL` to its URL at build time. Without that proxy, the audit still uses JSON-RPC, but MCP chain status is unavailable in the browser. Test networks use their configured JSON-RPC endpoints.
 
 ## Security and status
 
